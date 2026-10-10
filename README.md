@@ -167,11 +167,9 @@ ORDER BY sale_month;
 ```
 
 ---
+<img width="764" height="465" alt="image" src="https://github.com/user-attachments/assets/f765302a-8721-4465-8c8c-65d03a5a13b6" />
 
-## 📈 Future Enhancements
-- RFM analysis by **customer** or **product**  
-- Add more detailed **supplier** and **purchase order** tables  
-- Create **dashboards** using Power BI or Oracle APEX  
+
 
 ---
 
