@@ -1,158 +1,108 @@
-# 🛍️ Retail Store Sales Management – Oracle SQL Project
+# 🛍️ Retail Store Sales Management – Oracle SQL + Power BI
 
 ## 📋 Project Overview
-This project simulates a **retail store system** using Oracle SQL.  
-It manages sales, products, stores, customers, and inventory — providing insights such as sales trends, slow-moving products, and RFM analysis.
+A **retail store system** built on Oracle SQL. It manages sales, products, stores, customers and inventory, enforces business rules with triggers, and exposes sales trends and slow-moving products through analytical views. A Power BI dashboard sits on top of the database.
 
-The project was designed **from scratch**, including all schema creation, triggers, and analytical views.
+The data is **synthetic** and was generated for learning and portfolio purposes.
+
+---
+
+## 📈 Power BI Dashboard
+![Retail Sales Dashboard](docs/dashboard.png)
+
+- **KPI cards:** total sales with a month-over-month change indicator, items sold, average order value, low-stock count
+- **Visuals:** monthly sales, top products by revenue, sales by store
+- **Interactivity:** month slicer
+- **Model:** the Oracle tables are loaded through Power BI's Oracle connector, with a separate `Calendar` table for time intelligence
+
+```DAX
+Avg Order Value = AVERAGE(SALES[TOTAL_AMOUNT])
+
+Low Stock Count =
+CALCULATE(
+    COUNTROWS(INVENTORY),
+    FILTER(INVENTORY, INVENTORY[QUANTITY_IN_STOCK] <= RELATED(PRODUCTS[REORDER_LEVEL]))
+)
+```
+
+---
+
+## 🗂️ Repository Contents
+| File | Purpose |
+|------|---------|
+| `create-table.sql` | Creates the tables |
+| `create-sequences.sql` | Creates the sequences used for primary keys |
+| `create_trigger.sql` | Auto-ID, pricing, stock and total-amount triggers |
+| `test_triggers.sql` | Smoke test for the triggers (rolls back, changes no data) |
+| `docs/dashboard.png` | Dashboard screenshot |
+
+**Run order:** `create-table.sql` → `create-sequences.sql` → `create_trigger.sql` → load data → analytical views → `test_triggers.sql`
 
 ---
 
 ## 🧱 Database Schema
 
-### 1️⃣ **PRODUCTS**
-| Column | Type | Description |
-|--------|------|-------------|
-| PRODUCT_ID | NUMBER | Primary key |
-| PRODUCT_NAME | VARCHAR2(100) | Product name |
-| CATEGORY | VARCHAR2(50) | Product category |
-| PRICE | NUMBER | Unit price |
-| SKU | VARCHAR2(50) NOT NULL | Stock Keeping Unit |
+```mermaid
+erDiagram
+    STORES    ||--o{ SALES      : "has"
+    CUSTOMERS ||--o{ SALES      : "places"
+    SALES     ||--|{ SALE_ITEMS : "contains"
+    PRODUCTS  ||--o{ SALE_ITEMS : "sold as"
+    PRODUCTS  ||--o{ INVENTORY  : "stocked as"
+    STORES    ||--o{ INVENTORY  : "holds"
+```
 
-### 2️⃣ **STORES**
-| Column | Type | Description |
-|--------|------|-------------|
-| STORE_ID | NUMBER | Primary key |
-| STORE_NAME | VARCHAR2(100) | Store name |
-| LOCATION | VARCHAR2(100) | Store location |
-
-### 3️⃣ **CUSTOMERS**
-| Column | Type | Description |
-|--------|------|-------------|
-| CUSTOMER_ID | NUMBER | Primary key |
-| CUSTOMER_NAME | VARCHAR2(100) | Customer full name |
-| PHONE | VARCHAR2(20) | Contact number |
-
-### 4️⃣ **SALES**
-| Column | Type | Description |
-|--------|------|-------------|
-| SALE_ID | NUMBER | Primary key |
-| STORE_ID | NUMBER | Foreign key to STORES |
-| CUSTOMER_ID | NUMBER | Foreign key to CUSTOMERS |
-| SALE_DATE | DATE | Date of the sale |
-| TOTAL_AMOUNT | NUMBER | Total sale amount (auto-updated by trigger) |
-
-### 5️⃣ **SALE_ITEMS**
-| Column | Type | Description |
-|--------|------|-------------|
-| SALE_ITEM_ID | NUMBER | Primary key |
-| SALE_ID | NUMBER | Foreign key to SALES |
-| PRODUCT_ID | NUMBER | Foreign key to PRODUCTS |
-| QUANTITY | NUMBER | Quantity sold |
-| DISCOUNT | NUMBER | Discount percentage |
-| LINE_TOTAL | NUMBER | Total per line (auto-calculated by trigger) |
-
-### 6️⃣ **INVENTORY**
-| Column | Type | Description |
-|--------|------|-------------|
-| INVENTORY_ID | NUMBER | Primary key |
-| PRODUCT_ID | NUMBER | Foreign key to PRODUCTS |
-| STORE_ID | NUMBER | Foreign key to STORES |
-| QUANTITY_IN_STOCK | NUMBER | Available stock |
+| Table | Columns |
+|-------|---------|
+| **PRODUCTS** | `PRODUCT_ID` (PK), `SKU` (unique), `NAME`, `CATEGORY`, `UNIT_PRICE`, `COST_PRICE`, `REORDER_LEVEL` |
+| **STORES** | `STORE_ID` (PK), `NAME`, `CITY`, `ADDRESS` |
+| **CUSTOMERS** | `CUSTOMER_ID` (PK), `NAME`, `PHONE`, `LOYALTY_MEMBER` |
+| **SALES** | `SALE_ID` (PK), `STORE_ID` (FK), `CUSTOMER_ID` (FK), `SALE_DATE`, `TOTAL_AMOUNT` (maintained by trigger) |
+| **SALE_ITEMS** | `SALE_ITEM_ID` (PK), `SALE_ID` (FK), `PRODUCT_ID` (FK), `QUANTITY`, `UNIT_PRICE`, `DISCOUNT` (%), `LINE_TOTAL` (maintained by trigger) |
+| **INVENTORY** | `INVENTORY_ID` (PK), `PRODUCT_ID` (FK), `STORE_ID` (FK), `QUANTITY_IN_STOCK` |
+| **SUPPLIERS** | `SUPPLIER_ID` (PK), `NAME`, `CONTACT_EMAIL`, `LEAD_TIME_DAYS` – reference data, not yet linked to products |
 
 ---
 
-## ⚙️ Key Features and Logic
+## ⚙️ Triggers
 
-### 🔸 Sequences
-```sql
-CREATE SEQUENCE seq_product_id START WITH 1;
-CREATE SEQUENCE seq_sale_id START WITH 1;
-CREATE SEQUENCE seq_sale_item_id START WITH 1;
-```
+| Trigger | Fires on | What it does |
+|---------|----------|--------------|
+| `bi_products`, `trg_store_id`, `trg_customer_id`, `trg_sale_id`, `trg_sale_item_id`, `trg_inventory_id` | `BEFORE INSERT` | Fills primary keys from sequences |
+| `trg_line_total` | `BEFORE INSERT/UPDATE` on `sale_items` | Calculates `quantity × unit price × (1 − discount%)`; uses the product price when no unit price is given |
+| `trg_check_inventory` | `BEFORE INSERT` on `sale_items` | Blocks the sale when stock is insufficient or the product is not stocked in that store |
+| `trg_update_inventory` | `AFTER INSERT/UPDATE/DELETE` on `sale_items` | Deducts stock on sale, adjusts on edit, restores on delete |
+| `trg_update_sale_total` | `COMPOUND`, on `sale_items` | Recalculates `sales.total_amount` after each statement |
+| `trg_no_negative_stock` | `BEFORE INSERT/UPDATE` on `inventory` | Rejects negative stock |
 
-### 🔸 Triggers
+**Design note:** `trg_update_sale_total` is a compound trigger. A plain row-level trigger that reads `sale_items` while it is being modified fails with `ORA-04091` (mutating table). The compound trigger collects the affected sale ids row by row and recalculates each total once the statement completes.
 
-#### 1️⃣ Calculate Line Total Automatically
-```sql
-CREATE OR REPLACE TRIGGER trg_line_total
-BEFORE INSERT OR UPDATE ON sale_items
-FOR EACH ROW
-BEGIN
-  :NEW.line_total := (:NEW.quantity * 
-                      (SELECT price FROM products WHERE product_id = :NEW.product_id))
-                      * (1 - NVL(:NEW.discount, 0)/100);
-END;
-```
-
-#### 2️⃣ Update Sale Total Automatically
-```sql
-CREATE OR REPLACE TRIGGER trg_update_sale_total
-AFTER INSERT OR UPDATE OR DELETE ON sale_items
-FOR EACH ROW
-BEGIN
-  UPDATE sales s
-  SET total_amount = (SELECT SUM(line_total)
-                      FROM sale_items
-                      WHERE sale_id = s.sale_id)
-  WHERE s.sale_id = :NEW.sale_id;
-END;
-```
-
-#### 3️⃣ Prevent Sale if Not Enough Stock
-```sql
-CREATE OR REPLACE TRIGGER trg_check_inventory
-BEFORE INSERT ON sale_items
-FOR EACH ROW
-DECLARE
-  v_stock NUMBER;
-BEGIN
-  SELECT quantity_in_stock INTO v_stock
-  FROM inventory
-  WHERE product_id = :NEW.product_id
-  AND store_id = (SELECT store_id FROM sales WHERE sale_id = :NEW.sale_id);
-
-  IF v_stock < :NEW.quantity THEN
-    RAISE_APPLICATION_ERROR(-20001, 'Not Enough Stock for this Product');
-  END IF;
-END;
-```
-
-#### 4️⃣ Prevent Negative Stock
-```sql
-CREATE OR REPLACE TRIGGER trg_no_negative_stock
-BEFORE UPDATE ON inventory
-FOR EACH ROW
-BEGIN
-  IF :NEW.quantity_in_stock < 0 THEN
-    RAISE_APPLICATION_ERROR(-20002, 'Stock cannot be negative');
-  END IF;
-END;
-```
+Run `test_triggers.sql` to verify the behaviour – it inserts a sale, checks totals and stock, tests overselling and deletion, then rolls everything back.
 
 ---
 
 ## 📊 Analytical Views
 
-### 🔹 1. Materialized View for Inventory
+### 🔹 1. Inventory Summary
 ```sql
 CREATE MATERIALIZED VIEW mv_inventory_summary AS
-SELECT i.store_id, s.store_name,
-       i.product_id, p.product_name,
+SELECT i.store_id, s.name AS store_name,
+       i.product_id, p.name AS product_name,
        i.quantity_in_stock
 FROM inventory i
-JOIN stores s ON i.store_id = s.store_id
+JOIN stores s   ON i.store_id = s.store_id
 JOIN products p ON i.product_id = p.product_id;
 ```
 
 ### 🔹 2. Slow-Moving Products
 ```sql
+-- Adjust the threshold to the sales volume of your data
 CREATE MATERIALIZED VIEW mv_slow_moving AS
-SELECT p.product_id, p.product_name,
-       SUM(si.quantity) total_sold
+SELECT p.product_id, p.name AS product_name,
+       SUM(si.quantity) AS total_sold
 FROM sale_items si
 JOIN products p ON si.product_id = p.product_id
-GROUP BY p.product_id, p.product_name
+GROUP BY p.product_id, p.name
 HAVING SUM(si.quantity) < 5;
 ```
 
@@ -167,9 +117,11 @@ ORDER BY sale_month;
 ```
 
 ---
-<img width="764" height="465" alt="image" src="https://github.com/user-attachments/assets/f765302a-8721-4465-8c8c-65d03a5a13b6" />
 
-
+## 🚧 Future Work
+- Link `SUPPLIERS` to `PRODUCTS` and add purchase orders
+- RFM analysis by customer and by product
+- Refresh strategy for the materialized views
 
 ---
 
@@ -177,5 +129,6 @@ ORDER BY sale_month;
 **Salma Ahmed Khogali**  
 📍 Riyadh, Saudi Arabia  
 📧 [saloomkhogali10@gmail.com](mailto:saloomkhogali10@gmail.com)  
-💼 Bachelor’s in IT – University of Khartoum  
+💼 Bachelor's in IT – University of Khartoum  
 🧠 Data Science Certified – Datamites Institute  
+📜 Microsoft PL-300 – Power BI Data Analyst Associate
